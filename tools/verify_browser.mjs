@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 
+const catalogue = JSON.parse(await readFile(resolve('data/catalog.json'), 'utf8'));
+const expectedLinks = catalogue.reduce((count, record) => count + 1 + (record.maps_url !== null ? 1 : 0), 0);
 const profile = await mkdtemp(join(process.env.TMPDIR, 'remates-cdp-'));
 const child = spawn('chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank']);
 let socket;
@@ -60,8 +62,8 @@ try {
     console.log(JSON.stringify(report));
     assert.equal(report.width, width);
     assert.equal(report.overflow, false);
-    assert.equal(report.cards, 7);
-    assert.equal(report.links, 14);
+    assert.equal(report.cards, catalogue.length);
+    assert.equal(report.links, expectedLinks);
     assert.ok(report.minTargetHeight >= 44);
     assert.ok(report.stylesheetLoaded);
   }

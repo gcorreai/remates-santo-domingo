@@ -2,6 +2,7 @@
 from html.parser import HTMLParser
 from pathlib import Path
 import os
+import json
 import unittest
 from urllib.request import urlopen
 
@@ -66,16 +67,22 @@ class SiteContract(unittest.TestCase):
         text = urlopen(url, timeout=30).read().decode() if url else path.read_text()
         doc = Document(text)
         self.assertEqual(doc.stack, [])
-        self.assertEqual(len(doc.cards), 7)
-        self.assertEqual(len(doc.links), 14)
-        for card, (address, coordinates, slug) in zip(doc.cards, EXPECTED):
-            with self.subTest(address=address):
-                self.assertEqual(card['headings'], [address])
-                self.assertEqual(card['text'], [address, 'Google Maps', 'Ficha original de MisRemates'])
-                self.assertEqual(card['links'], [
-                    {'href': 'https://www.google.com/maps/search/?api=1&query=' + coordinates, 'text': 'Google Maps'},
-                    {'href': 'https://www.misremates.cl/remate/' + slug, 'text': 'Ficha original de MisRemates'},
-                ])
+        records = json.loads((ROOT / 'data/catalog.json').read_text())
+        baseline = [{'id': slug.rsplit('-', 1)[-1], 'address': address,
+                     'maps_url': 'https://www.google.com/maps/search/?api=1&query=' + coordinates,
+                     'source_url': 'https://www.misremates.cl/remate/' + slug}
+                    for address, coordinates, slug in EXPECTED]
+        self.assertEqual(records[:7], baseline)
+        self.assertEqual(len(doc.cards), len(records))
+        self.assertEqual(len(doc.links), sum(1 + (r['maps_url'] is not None) for r in records))
+        for card, record in zip(doc.cards, records):
+            address = record['address']
+            maps_label = 'Google Maps' if record['maps_url'] else 'Google Maps no disponible en la ficha'
+            self.assertEqual(card['headings'], [address])
+            self.assertEqual(card['text'], [address, maps_label, 'Ficha original de MisRemates'])
+            links = ([{'href': record['maps_url'], 'text': 'Google Maps'}] if record['maps_url'] else [])
+            links.append({'href': record['source_url'], 'text': 'Ficha original de MisRemates'})
+            self.assertEqual(card['links'], links)
         self.assertNotIn('141980', text)
         self.assertFalse({'img', 'picture', 'video', 'iframe', 'script'} & {tag for tag, _ in doc.tags})
         visible = ' '.join(doc.visible)
