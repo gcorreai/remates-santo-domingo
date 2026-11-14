@@ -7,6 +7,20 @@ import re
 import os
 import tempfile
 import fcntl
+import unicodedata
+
+
+STREETS = ('LAS BRISAS', 'LAS GAVIOTAS', 'LOS CORMORANES', 'LOS PELICANOS',
+           'LOS PIQUEROS', 'LOS QUELTEHUES', 'LOS MIRLOS', 'LAS GARZAS',
+           'LAS LOICAS', 'LAS TORCAZAS', 'LAS PERDICES', 'LAS TORTOLAS',
+           'LOS FLAMENCOS', 'LAS GRULLAS', 'LAS BANDURRIAS', 'LOS PETRELES',
+           'LOS CAUQUENES', 'LOS ALBATROS')
+
+
+def matching_address(address):
+    """Fold case/accents for comparisons only; never change stored/public text."""
+    return ''.join(c for c in unicodedata.normalize('NFD', address)
+                   if not unicodedata.combining(c)).upper()
 
 
 def write_pair(contents):
@@ -64,6 +78,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['add'])
     parser.add_argument('batch', type=Path)
+    parser.add_argument('--commune-verified', action='store_true',
+                        help='attest Santo Domingo was checked in the readable body of every incoming listing')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
     try:
@@ -82,6 +98,8 @@ def update(args, parser):
     incoming = json.loads(args.batch.read_text(encoding='utf-8'))
     if not isinstance(records, list) or not isinstance(incoming, list):
         parser.error('expected JSON array')
+    if incoming and not args.commune_verified:
+        parser.error('--commune-verified required: check Santo Domingo in each listing body, not just its slug')
     original_count = len(records)
     by_id = {}
     for record in records + incoming:
@@ -97,11 +115,17 @@ def update(args, parser):
                 or (record['maps_url'] is not None and not re.fullmatch(
                     r'https://www\.google\.com/maps/search/\?api=1&query=-?[0-9]+(?:\.[0-9]+)?(?:%2C|,)-?[0-9]+(?:\.[0-9]+)?', record['maps_url']))):
             parser.error('URL not allowed')
-        address_pattern = (r'(?:LAS (?:GAVIOTAS|TORCAZAS|GARZAS)|LOS (?:MIRLOS|ALBATROS)) '
-                           r'(?:[1-9][0-9]*(?: (?:DPC [0-9]+|DP [A-Z] [0-9]+(?: BD [0-9]+)?))?'
-                           r'|MZ [A-Z] LT [1-9][0-9]*)')
-        suffix = '-' + record['address'].lower().replace(' ', '-') + '-santo-domingo-' + record['id']
-        if not re.fullmatch(address_pattern, record['address']) or not record['source_url'].endswith(suffix):
+        address = matching_address(record['address'])
+        # A complete street plus address-only components, never free prose.
+        identifier = r'(?:[0-9]+[A-Z]?(?:-[A-Z0-9]+)?|[A-Z](?:[ -][0-9]+)?)'
+        label = r'(?:MZ|MZA|MANZANA|LT|LOTE|DPC|DP|DEPTO|DEPARTAMENTO|UNIDAD|BD|BODEGA|N[º°]?)\.?'
+        component = label + ' ' + identifier
+        address_pattern = ('(?:' + '|'.join(STREETS) + ') '
+                           r'(?:[1-9][0-9]*(?:-[A-Z0-9]+| [A-Z])?|S/?N|'
+                           + component + ')(?:,? ' + component + ')*')
+        slug_address = re.sub(r'[^a-z0-9]+', '-', address.lower()).strip('-')
+        suffix = '-' + slug_address + '-santo-domingo-' + record['id']
+        if not re.fullmatch(address_pattern, address) or not record['source_url'].endswith(suffix):
             parser.error('address out of scope or not matched by Santo Domingo source URL')
         key = record['id']
         if key in by_id and by_id[key] != record:

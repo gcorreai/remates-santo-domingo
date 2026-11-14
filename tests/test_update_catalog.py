@@ -28,7 +28,7 @@ class UpdateCatalog(unittest.TestCase):
     def run_batch(self, records):
         self.batch.write_text(json.dumps(records), encoding='utf-8')
         return subprocess.run([sys.executable, str(self.root / 'tools/update_catalog.py'),
-                               'add', str(self.batch), '--root', str(self.root)],
+                               'add', str(self.batch), '--commune-verified', '--root', str(self.root)],
                               text=True, capture_output=True)
 
     def catalogue(self):
@@ -39,6 +39,71 @@ class UpdateCatalog(unittest.TestCase):
         result = self.run_batch(records)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(reason, result.stderr)
+        self.assertEqual(before, [(self.root / name).read_bytes() for name in ('data/catalog.json', 'docs/index.html')])
+
+    def test_accepts_all_authorized_streets_preserving_literal_addresses(self):
+        import unicodedata
+        streets = ('Las Brisas', 'Las Gaviotas', 'Los Cormoranes', 'Los Pelícanos',
+                   'Los Piqueros', 'Los Queltehues', 'Los Mirlos', 'Las Garzas',
+                   'Las Loicas', 'Las Torcazas', 'Las Perdices', 'Las Tórtolas',
+                   'Los Flamencos', 'Las Grullas', 'Las Bandurrias', 'Los Pétreles',
+                   'Los Cauquenes', 'Los Albatros')
+        for street in streets:
+            plain = ''.join(c for c in unicodedata.normalize('NFD', street)
+                            if not unicodedata.combining(c))
+            for spelling in dict.fromkeys((street, plain.upper(), plain.lower())):
+                with self.subTest(address=spelling):
+                    address = spelling + ' 200'
+                    slug = plain.lower().replace(' ', '-') + '-200'
+                    record = {'id': '999001', 'address': address, 'maps_url': None,
+                              'source_url': f'https://www.misremates.cl/remate/casa-{slug}-santo-domingo-999001'}
+                    # Restore the same baseline between independent literal variants.
+                    records = self.catalogue()[:7]
+                    (self.root / 'data/catalog.json').write_text(json.dumps(records))
+                    result = self.run_batch([record])
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.catalogue()[-1]['address'], address)
+                    doc = Document((self.root / 'docs/index.html').read_text())
+                    self.assertEqual(doc.cards[-1]['headings'], [address])
+
+    def test_accepts_legible_address_suffixes_with_matching_slugs(self):
+        suffixes = ('SN', 'S/N', 'SN LT 4', 'LT 4', 'Lote 4',
+                    'MZ H LT 4', 'Manzana H Lote 4', '200-A', '200 A',
+                    '200 Depto 32', '200 Depto. B 32', '200 Departamento 32',
+                    '200 Unidad B-32', '200 DPC 24', '200 DP B 32 BD 6',
+                    '200, Depto. 32', '200 Nº 32')
+        import re
+        for suffix in suffixes:
+            with self.subTest(suffix=suffix):
+                address = 'Las Gaviotas ' + suffix
+                slug = re.sub(r'[^a-z0-9]+', '-', address.lower()).strip('-')
+                record = {'id': '999001', 'address': address, 'maps_url': None,
+                          'source_url': f'https://www.misremates.cl/remate/casa-{slug}-santo-domingo-999001'}
+                (self.root / 'data/catalog.json').write_text(json.dumps(self.catalogue()[:7]))
+                result = self.run_batch([record])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(Document((self.root / 'docs/index.html').read_text()).cards[-1]['headings'], [address])
+
+    def test_rejects_full_prefix_false_positives_even_with_matching_slug(self):
+        valid = self.catalogue()[0]
+        self.assertEqual(self.run_batch([valid]).returncode, 0)
+        for address in ('LAS GAVIOTAS FALSAS 182', 'LAS GAVIOTASX 182',
+                        'LAS BRISAS DEL MAR 182', 'LOS PELICANOS NORTE 182',
+                        'LAS GAVIOTAS 182 ROL 123-4', 'LAS GAVIOTAS 182 DEUDA 300',
+                        'LAS GAVIOTAS 182 CASA LINDA', 'LAS GAVIOTAS 182\n'):
+            with self.subTest(address=address):
+                source = 'https://www.misremates.cl/remate/casa-' + address.lower().strip().replace(' ', '-') + '-santo-domingo-142172'
+                self.assert_rejected([dict(valid, address=address, source_url=source)], 'address out of scope')
+
+    def test_requires_explicit_body_commune_verification_for_nonempty_batch(self):
+        record = self.catalogue()[0]
+        self.assertEqual(self.run_batch([record]).returncode, 0)
+        before = [(self.root / name).read_bytes() for name in ('data/catalog.json', 'docs/index.html')]
+        result = subprocess.run([sys.executable, str(self.root / 'tools/update_catalog.py'),
+                                 'add', str(self.batch), '--root', str(self.root)],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('commune-verified', result.stderr)
         self.assertEqual(before, [(self.root / name).read_bytes() for name in ('data/catalog.json', 'docs/index.html')])
 
     def test_rejects_nonminimal_schema(self):
